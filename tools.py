@@ -8,11 +8,14 @@ class Tools():
     def get_files_info(self, working_directory, directory=None):
         """
         Get the files and their details in a directory
+        input:
+            working_directory: Working directory
+            directory: A directory inside the working directory (default: working_directory)
         """
         abs_working_directory = os.path.abspath(working_directory)
 
         if directory == None:
-            directory = "."
+            directory = working_directory
         abs_directory = os.path.abspath(directory)
 
         if not abs_directory.startswith(abs_working_directory):
@@ -25,7 +28,7 @@ class Tools():
             content_path = os.path.join(abs_directory, content)
             is_dir = os.path.isdir(content_path)
             size = os.path.getsize(content_path)
-            final_response += f"{content}: file_size={size}, is_dir={is_dir}, path={content_path}"
+            final_response += f"{content}: file_size={size}, is_dir={is_dir}, path={content_path}\n"
 
         return final_response
 
@@ -42,6 +45,10 @@ class Tools():
         """
         pass
 
+    def temporary_file_writer(self, string):
+        """
+        Write temp python files to make decisions.
+        """
     def command_excecutor(self, command):
         """
         Excecute commands
