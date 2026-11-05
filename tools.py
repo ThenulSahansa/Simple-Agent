@@ -34,31 +34,36 @@ class Tools():
 
         Inputs:
             working_directory: The current working directory.
-            directory: A directory inside the working directory
-                (default: working_directory).
+            directory: A relative directory inside the working directory or
+                an absolute directory path (default: working_directory).
         Output:
             A list containing each item's name, size, directory status, and path.
             Returns an error message if the directory is outside the working
             directory.
         """
-        abs_working_directory = os.path.abspath(working_directory)
-
-        if directory == None:
+        if directory is None:
             directory = working_directory
+        if os.path.isabs(directory):
             abs_directory = os.path.abspath(directory)
         else:
             abs_directory = os.path.abspath(os.path.join(working_directory, directory))
 
-        if not abs_directory.startswith(abs_working_directory):
-            return f"Error: {directory} is in the working directory"
+        if not os.path.isdir(abs_directory):
+            return f"Error: directory not found: {directory}"
 
         final_response = ""
 
-        contents = os.listdir(abs_directory)
+        try:
+            contents = os.listdir(abs_directory)
+        except OSError as error:
+            return f"Error listing directory {directory}: {error}"
         for content in contents:
             content_path = os.path.join(abs_directory, content)
             is_dir = os.path.isdir(content_path)
-            size = os.path.getsize(content_path)
+            try:
+                size = os.path.getsize(content_path)
+            except OSError:
+                size = 0
             final_response += f"- {content}: file_size={size}, is_dir={is_dir}, path={content_path}\n"
 
         return final_response
@@ -347,60 +352,7 @@ class Tools():
             return "Error: args must be a list of strings"
 
         application = application.strip().strip('"')
-        executable = shutil.which(application)
-
-        if executable is None and os.path.isfile(application):
-            executable = os.path.abspath(application)
-
-        if executable is None and os.name == "nt":
-            search_roots = [
-                os.environ.get("ProgramFiles"),
-                os.environ.get("ProgramFiles(x86)"),
-                os.environ.get("LOCALAPPDATA"),
-            ]
-            executable_names = [
-                application
-                if application.lower().endswith(".exe")
-                else f"{application}.exe"
-            ]
-            if application.lower() in {"android studio", "studio"}:
-                executable_names = ["studio64.exe", "studio.exe"]
-
-            known_locations = [
-                os.path.join(
-                    root,
-                    "Android",
-                    "Android Studio",
-                    "bin",
-                    executable_name,
-                )
-                for root in filter(None, search_roots[:2])
-                for executable_name in executable_names
-            ]
-            known_locations.extend(
-                os.path.join(
-                    os.environ.get("LOCALAPPDATA", ""),
-                    "Programs",
-                    "Android Studio",
-                    "bin",
-                    executable_name,
-                )
-                for executable_name in executable_names
-            )
-            for location in known_locations:
-                if os.path.isfile(location):
-                    executable = location
-                    break
-
-            if executable is None:
-                for root in filter(None, search_roots):
-                    for executable_name in executable_names:
-                        candidate = os.path.join(root, executable_name)
-                        if os.path.isfile(candidate):
-                            executable = candidate
-                            break
-                    if executable is not None:
-                        break
+        executable = self.find_application(application, return_error=False)
 
         if executable is None:
             return (
@@ -417,6 +369,65 @@ class Tools():
         except OSError as error:
             return f"Error opening application {application}: {error}"
         return f"Successfully opened {application} (process_id={process.pid})"
+
+    def find_application(self, application, return_error=True):
+        """
+        Find an installed application executable.
+
+        Inputs:
+            application: An executable name, application name, or full path.
+            return_error: Whether to return a formatted error instead of None.
+        Output:
+            The absolute executable path, or an error message/None when not
+            found.
+        """
+        if not isinstance(application, str) or not application.strip():
+            return "Error: application must be a non-empty string" if return_error else None
+
+        application = application.strip().strip('"')
+        executable = shutil.which(application)
+        if executable is None and os.path.isfile(application):
+            executable = os.path.abspath(application)
+
+        if executable is None and os.name == "nt":
+            executable_names = [
+                application if application.lower().endswith(".exe")
+                else f"{application}.exe"
+            ]
+            if application.lower() in {"android studio", "studio"}:
+                executable_names = ["studio64.exe", "studio.exe"]
+
+            roots = [
+                os.environ.get("ProgramFiles"),
+                os.environ.get("ProgramFiles(x86)"),
+                os.environ.get("LOCALAPPDATA"),
+            ]
+            scanned_directories = 0
+            for root in filter(None, roots):
+                root_depth = root.rstrip(os.sep).count(os.sep)
+                for current_root, directories, files in os.walk(root):
+                    scanned_directories += 1
+                    if (
+                        scanned_directories > 5000
+                        or current_root.rstrip(os.sep).count(os.sep) - root_depth >= 5
+                    ):
+                        directories[:] = []
+                    if scanned_directories > 5000:
+                        break
+                    for executable_name in executable_names:
+                        if executable_name.lower() in {
+                            file.lower() for file in files
+                        }:
+                            executable = os.path.join(current_root, executable_name)
+                            break
+                    if executable is not None:
+                        break
+                if executable is not None:
+                    break
+
+        if executable is None and return_error:
+            return f"Error: application not found: {application}"
+        return executable
 
     def close_application(self, process_name):
         """

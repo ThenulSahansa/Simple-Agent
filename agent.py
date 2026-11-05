@@ -15,8 +15,8 @@ tool_schema = [
         "function": {
             "name": "get_files_info",
             "description": (
-                "List files and directories in the working directory or one "
-                "of its child directories."
+                "List files and directories. Relative paths use the working "
+                "directory; absolute paths can inspect other local folders."
             ),
             "parameters": {
                 "type": "object",
@@ -28,8 +28,8 @@ tool_schema = [
                     "directory": {
                         "type": "string",
                         "description": (
-                            "A directory inside the working directory. "
-                            "Defaults to the working directory."
+                            "A relative or absolute directory path. Defaults "
+                            "to the working directory."
                         ),
                     },
                 },
@@ -198,6 +198,26 @@ tool_schema = [
     {
         "type": "function",
         "function": {
+            "name": "find_application",
+            "description": (
+                "Find the executable path of an installed desktop application "
+                "outside the project directory."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "application": {
+                        "type": "string",
+                        "description": "Application name, executable, or full path.",
+                    },
+                },
+                "required": ["application"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "close_application",
             "description": "Close desktop application processes by executable name.",
             "parameters": {
@@ -216,7 +236,7 @@ tool_schema = [
 
 tools = Tools()
 MODEL = "openai/gpt-oss-20b"
-MAX_TOOL_ROUNDS = 8
+MAX_TOOL_ROUNDS = 15
 MAX_OUTPUT_TOKENS = 1024
 
 SYSTEM_PROMPT = """
@@ -225,7 +245,9 @@ validate them. Use the working directory for file operations and never claim
 success unless a tool confirms it.
 
 Available tools:
-Use search_tool for web searches and url_reader for webpage contents.
+Use get_files_info with absolute paths when inspecting folders outside the
+project. Use find_application before open_application when the executable path
+is unknown. Use search_tool for web searches and url_reader for webpage contents.
 Use valid JSON tool arguments with escaped strings. Explain errors clearly.
 """
 
@@ -244,6 +266,7 @@ def execute_tool_call(tool_call):
 
     available_tools = {
         "get_files_info": tools.get_files_info,
+        "find_application": tools.find_application,
         "get_file_content": tools.get_file_content,
         "write_to_file": tools.write_to_file,
         "command_excecutor": tools.command_excecutor,
@@ -258,9 +281,28 @@ def execute_tool_call(tool_call):
     if selected_tool is None:
         return f"Error: Tool {name} not found."
 
+    display_arguments = {
+        key: value
+        for key, value in arguments.items()
+        if key != "content"
+    }
+    if "content" in arguments:
+        display_arguments["content"] = (
+            f"<{len(str(arguments['content']))} characters>"
+        )
+    console.print(
+        f"[grey58]Tool: [bold]{name}[/] "
+        f"Arguments: {display_arguments}[/]"
+    )
+    if name == "command_excecutor":
+        console.print(
+            f"[grey58]Processing command: "
+            f"[bold]{arguments.get('command', '')}[/][/]"
+        )
+
     try:
         with console.status(
-            f"[bold yellow]Running {name}...[/]",
+            f"[grey58]Running tool [bold]{name}[/]...[/]",
             spinner="dots",
         ):
             result = selected_tool(**arguments)
@@ -291,7 +333,12 @@ def assistant_message(response_message):
     return message
 
 def request_completion(
-    client, messages, model, include_tools=True, response_format=None
+    client,
+    messages,
+    model,
+    include_tools=True,
+    response_format=None,
+    status_text="Thinking: preparing a response...",
 ):
     request = {
         "model": model,
@@ -304,7 +351,7 @@ def request_completion(
     if response_format is not None:
         request["response_format"] = response_format
     with console.status(
-        "[bold cyan]Agent is thinking...[/]",
+        f"[grey58]{status_text}[/]",
         spinner="dots",
     ):
         return client.chat.completions.create(**request)
@@ -370,9 +417,17 @@ def run_agent(client, user_message, working_directory, model=MODEL):
         },
     ]
 
-    for _ in range(MAX_TOOL_ROUNDS):
+    for round_number in range(MAX_TOOL_ROUNDS):
         try:
-            response = request_completion(client, messages, model)
+            response = request_completion(
+                client,
+                messages,
+                model,
+                status_text=(
+                    f"Thinking: analyzing request "
+                    f"(step {round_number + 1}/{MAX_TOOL_ROUNDS})..."
+                ),
+            )
         except BadRequestError as error:
             error_text = str(error)
             if "parse tool call arguments" not in error_text:
@@ -414,6 +469,11 @@ def run_agent(client, user_message, working_directory, model=MODEL):
 
         if not response_message.tool_calls:
             return response_message.content or "The model returned an empty response."
+
+        console.print(
+            "[grey58]Thinking: selecting "
+            f"{len(response_message.tool_calls)} tool(s)...[/]"
+        )
 
         for tool_call in response_message.tool_calls:
             messages.append(
