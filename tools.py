@@ -7,6 +7,13 @@ from html.parser import HTMLParser
 from urllib.parse import parse_qs, unquote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from subagent_creator import (
+    DEFAULT_MAX_TOKENS,
+    DEFAULT_MODEL,
+    Subagent,
+    SubagentCreator,
+)
+
 try:
     import certifi
 except ImportError:
@@ -26,7 +33,45 @@ class Tools():
         Output:
             A Tools instance ready to use the available file and command tools.
         """
-        pass
+        self.subagent_creator = SubagentCreator()
+        self.subagents = {}
+
+    def create_subagent(
+        self,
+        name,
+        instructions,
+        model=DEFAULT_MODEL,
+        max_tokens=DEFAULT_MAX_TOKENS,
+    ):
+        """
+        Create and store a specialist subagent configuration.
+
+        Inputs:
+            name: A non-empty name for the subagent.
+            instructions: The specialist instructions for the subagent.
+            model: The model used when the subagent is run.
+            max_tokens: The maximum response tokens.
+        Output:
+            The created Subagent instance. Returns an error message when the
+            configuration is invalid or a name is already registered.
+        """
+        if not isinstance(name, str) or not name.strip():
+            return "Error: name must be a non-empty string"
+        if name.strip() in self.subagents:
+            return f"Error: subagent already exists: {name.strip()}"
+
+        try:
+            subagent = self.subagent_creator.create(
+                name,
+                instructions,
+                model=model,
+                max_tokens=max_tokens,
+            )
+        except ValueError as error:
+            return f"Error creating subagent: {error}"
+
+        self.subagents[subagent.name] = subagent
+        return subagent
 
     def get_files_info(self, working_directory, directory=None):
         """

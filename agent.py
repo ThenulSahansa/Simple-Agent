@@ -1,5 +1,7 @@
 import json
 import os
+import re
+from datetime import datetime
 from groq import BadRequestError, Groq, RateLimitError
 import dotenv
 from tools import Tools
@@ -10,6 +12,38 @@ from rich.panel import Panel
 console = Console()
 
 tool_schema = [
+    {
+        "type": "function",
+        "function": {
+            "name": "create_subagent",
+            "description": "Create and store a specialist subagent configuration.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name": {
+                        "type": "string",
+                        "description": "A unique name for the specialist.",
+                    },
+                    "instructions": {
+                        "type": "string",
+                        "description": "The specialist's operating instructions.",
+                    },
+                    "model": {
+                        "type": "string",
+                        "description": "Optional model name.",
+                        "default": "openai/gpt-oss-20b",
+                    },
+                    "max_tokens": {
+                        "type": "integer",
+                        "description": "Maximum response tokens.",
+                        "default": 1024,
+                        "minimum": 1,
+                    },
+                },
+                "required": ["name", "instructions"],
+            },
+        },
+    },
     {
         "type": "function",
         "function": {
@@ -238,6 +272,7 @@ tools = Tools()
 MODEL = "openai/gpt-oss-20b"
 MAX_TOOL_ROUNDS = 15
 MAX_OUTPUT_TOKENS = 1024
+PLAN_MAX_OUTPUT_TOKENS = 2048
 
 SYSTEM_PROMPT = """
 You are an AI coding agent. Inspect relevant files, make focused changes, and
@@ -250,6 +285,69 @@ project. Use find_application before open_application when the executable path
 is unknown. Use search_tool for web searches and url_reader for webpage contents.
 Use valid JSON tool arguments with escaped strings. Explain errors clearly.
 """
+
+def plan_directory_name(user_message):
+    """Return a safe, readable directory name derived from a user request."""
+    directory_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", user_message)
+    directory_name = re.sub(r"\s+", " ", directory_name).strip().rstrip(".")
+    return (directory_name or "unnamed-request")[:120]
+
+def create_plan(client, user_message, working_directory, model=MODEL):
+    """Create and persist a Markdown execution plan before using any tools."""
+    planning_prompt = f"""
+Create an execution plan for this coding-agent request:
+
+{user_message}
+
+The agent has at most {MAX_TOOL_ROUNDS} tool-call rounds. The available tools
+are: {", ".join(tool["function"]["name"] for tool in tool_schema)}.
+Decide which tools are needed, the order in which to use them, and how many
+subagents should be deployed. Only recommend subagents when parallel or
+specialized work makes them useful. The plan must be actionable and concise.
+Return Markdown only with these headings:
+## Objective
+## Tool budget
+## Subagents
+## Execution steps
+## Validation
+"""
+    response = request_completion(
+        client,
+        [
+            {
+                "role": "system",
+                "content": (
+                    "You are a planning specialist. Do not execute tools or "
+                    "claim that any work has been completed."
+                ),
+            },
+            {"role": "user", "content": planning_prompt},
+        ],
+        model,
+        include_tools=False,
+        status_text="Planning: preparing execution plan...",
+    )
+    plan = response.choices[0].message.content or ""
+    if not plan.strip():
+        raise RuntimeError("Planning response was empty.")
+
+    brain_directory = os.path.join(
+        working_directory,
+        "Brain",
+        plan_directory_name(user_message),
+    )
+    if os.path.exists(brain_directory):
+        brain_directory = os.path.join(
+            os.path.dirname(brain_directory),
+            f"{os.path.basename(brain_directory)}-"
+            f"{datetime.now().strftime('%Y%m%d-%H%M%S')}",
+        )
+    os.makedirs(brain_directory, exist_ok=False)
+    plan_path = os.path.join(brain_directory, "Plan.MD")
+    with open(plan_path, "w", encoding="utf-8") as plan_file:
+        plan_file.write(plan.rstrip() + "\n")
+    console.print(f"[grey58]Plan saved: {plan_path}[/]")
+    return plan, plan_path
 
 def normalize_tool_name(name):
     return name.split("<|", 1)[0]
@@ -265,6 +363,7 @@ def execute_tool_call(tool_call):
         return f"Error: arguments for tool {name} must be a JSON object."
 
     available_tools = {
+        "create_subagent": tools.create_subagent,
         "get_files_info": tools.get_files_info,
         "find_application": tools.find_application,
         "get_file_content": tools.get_file_content,
@@ -343,7 +442,11 @@ def request_completion(
     request = {
         "model": model,
         "messages": messages,
-        "max_tokens": MAX_OUTPUT_TOKENS,
+        "max_tokens": (
+            PLAN_MAX_OUTPUT_TOKENS
+            if status_text.startswith("Planning:")
+            else MAX_OUTPUT_TOKENS
+        ),
     }
     if include_tools:
         request["tools"] = tool_schema
@@ -406,8 +509,17 @@ def recover_tool_call(client, messages, model):
     )()
 
 def run_agent(client, user_message, working_directory, model=MODEL):
+    plan, plan_path = create_plan(client, user_message, working_directory, model)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT},
+        {
+            "role": "system",
+            "content": (
+                f"{SYSTEM_PROMPT}\n\n"
+                "An execution plan was created before tool use. Follow it, "
+                "stay within the stated tool budget, and report deviations.\n"
+                f"Plan file: {plan_path}\n\n{plan}"
+            ),
+        },
         {
             "role": "user",
             "content": (

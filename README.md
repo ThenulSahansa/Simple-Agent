@@ -11,6 +11,8 @@ Simple Agent is a terminal-based AI coding assistant powered by the Groq API. It
 - DuckDuckGo search and HTTP/HTTPS page reading
 - Application discovery, launching, and Windows-only process closing
 - Configurable tool-call and response-token limits in `agent.py`
+- Reusable specialist subagents through `subagent_creator.py`
+- Pre-execution plans saved under a request-specific `Brain` folder
 
 ## Requirements
 
@@ -45,6 +47,25 @@ GROQ_API_KEY=your_groq_api_key
 
 The application loads this file automatically with `python-dotenv`. Do not commit `.env` or share your API key.
 
+## Creating a subagent
+
+Use `SubagentCreator` to configure a specialist with its own instructions while
+reusing the Groq client:
+
+```python
+from subagent_creator import SubagentCreator
+
+creator = SubagentCreator()
+reviewer = creator.create(
+    "code reviewer",
+    "Review code for correctness, maintainability, and security.",
+)
+answer = reviewer.run(client, "Review the latest changes.", context=diff)
+```
+
+Pass the existing `tool_schema` to `SubagentCreator(tools=tool_schema)` when a
+subagent should be allowed to call the agent's tools.
+
 ## Usage
 
 Start the agent from the project directory:
@@ -56,6 +77,11 @@ python agent.py
 Enter requests at the prompt. Type `exit` or `quit` to end the session.
 
 The agent receives the current working directory as context, so file paths in requests should normally be relative to the directory where `agent.py` is started.
+
+Before executing tools, the agent creates a Markdown plan based on the
+`MAX_TOOL_ROUNDS` budget, available tools, and recommended subagent count. The
+plan is saved as `Brain/<request>/Plan.MD` (with a timestamp suffix if the
+same request has already been run), then supplied to the execution agent.
 
 ## Available tools
 
@@ -71,6 +97,7 @@ The agent receives the current working directory as context, so file paths in re
 | `find_application` | Locate an installed executable |
 | `open_application` | Launch an application |
 | `close_application` | Request process closure on Windows |
+| `create_subagent` | Create and store a specialist subagent configuration |
 
 ## Safety notes
 
